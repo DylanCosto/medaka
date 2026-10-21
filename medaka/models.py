@@ -360,6 +360,9 @@ class TorchModel(torch.nn.Module):
                     continue
                 i += step
         self._mps_part_size = step
+        # the caching allocator otherwise keeps the large intermediate buffers
+        # wired in (unified) memory between batches
+        torch.mps.empty_cache()
         return out[0] if len(out) == 1 else torch.cat(out)
 
     def process_batch(self, batch, loss_fn,):
