@@ -82,6 +82,9 @@ def run_prediction(
     return remainder_regions
 
 
+MPS_READ_LEVEL_BATCH_SIZE = 4
+
+
 def predict(args):
     """Inference program."""
     logger = medaka.common.get_named_logger('Predict')
@@ -174,17 +177,42 @@ def predict(args):
         if not hasattr(feature_encoder, "sym_indels"):
             feature_encoder.sym_indels = False
 
-        if torch.cuda.device_count() > 0 and not args.cpu:
-            logger.info("Found a GPU.")
-            device = torch.device("cuda")
+        device = medaka.torch_ext.select_device(args.cpu)
+        if device.type == "mps":
+            # Only read level models benefit from the Apple GPU, the
+            # (small) counts matrix models run faster on the CPU
+            model = model_store.load_model(device=torch.device("cpu"))
+            if isinstance(model, ReadLevelFeaturesModel) \
+                    or os.environ.get("MEDAKA_MPS_ALL_MODELS"):
+                model = model.to(device)
+            else:
+                device = torch.device("cpu")
         else:
-            device = torch.device("cpu")
-            args.full_precision = True
+            model = model_store.load_model(device=device)
 
-        model = model_store.load_model(device=device)
+        if device.type == "cuda":
+            logger.info("Found a GPU.")
+        elif device.type == "mps":
+            # Run at full precision unless asked otherwise: half precision is
+            # faster but changes a few consensus calls with respect to the CPU
+            logger.info("Found an Apple GPU (MPS).")
+            if not args.half_precision_mps:
+                args.full_precision = True
+        else:
+            args.full_precision = True
 
         # fails if invalid feature encoder for model
         model.check_feature_encoder_compatibility(feature_encoder)
+
+        if isinstance(model, ReadLevelFeaturesModel) and device.type == "mps" \
+                and args.batch_size > MPS_READ_LEVEL_BATCH_SIZE:
+            # Samples in a batch are padded to the largest read depth; on an
+            # Apple GPU small batches are faster and keep the intermediate
+            # tensors to a size the MPS kernels handle correctly.
+            logger.info(
+                "Using batch size {} for the read level model on the Apple "
+                "GPU.".format(MPS_READ_LEVEL_BATCH_SIZE))
+            args.batch_size = MPS_READ_LEVEL_BATCH_SIZE
 
         if isinstance(model, ReadLevelFeaturesModel) and device.type == "cpu":
             msg = (

@@ -473,3 +473,22 @@ def no_schedule(warmup_steps=None, **kwargs):
         warmup_steps=warmup_steps,
         # start_step=last_epoch * len(train_loader),
     )
+
+
+def select_device(cpu=False):
+    """Choose the device to run a model on.
+
+    CUDA if available, otherwise the Apple GPU (Metal Performance Shaders)
+    unless the environment variable MEDAKA_NO_MPS is set, otherwise the CPU.
+
+    :param cpu: force the CPU.
+    """
+    if cpu:
+        return torch.device("cpu")
+    if torch.cuda.device_count() > 0:
+        return torch.device("cuda")
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available() \
+            and not os.environ.get("MEDAKA_NO_MPS"):
+        return torch.device("mps")
+    return torch.device("cpu")

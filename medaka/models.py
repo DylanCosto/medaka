@@ -306,11 +306,61 @@ class TorchModel(torch.nn.Module):
         Handles moving features to the correct device and type conversion
         if required. Returns a cpu tensor.
         """
-        x = self.get_model_input_features(batch).to(self.device())
+        device = self.device()
+        x = self.get_model_input_features(batch)
+        if device.type == "mps":
+            return self._predict_on_batch_mps(x)
+        x = x.to(device)
         with torch.inference_mode():
-            with torch.amp.autocast("cuda", enabled=self.half_precision):
+            with torch.amp.autocast(
+                    device.type, enabled=self.half_precision
+                    and device.type != "cpu"):
                 x = self.forward(x).detach().cpu()
         return x
+
+    def _predict_on_batch_mps(self, x):
+        """Run inference on an Apple GPU in parts that fit in its memory.
+
+        A batch sized for a CUDA GPU can need more memory than an Apple GPU
+        allows for a single buffer (in particular with read-level features),
+        so the batch is split, halving the part size on allocation failures.
+        The part size that worked is remembered for the next batches.
+        """
+        device = self.device()
+        n = x.shape[0]
+        step = min(n, getattr(self, "_mps_part_size", None) or n)
+        # MPS kernels can silently return wrong results for very large
+        # intermediate tensors (more than 2^31 elements): bound the number of
+        # (sample, position, read) cells per part. With read-level models the
+        # intermediates are ~400x larger than the input.
+        cells = max(t.numel() for t in (
+            x.values() if hasattr(x, "values") else [x])) // max(n, 1)
+        max_cells = int(os.environ.get("MEDAKA_MPS_MAX_CELLS", 4_000_000))
+        step = max(1, min(step, max_cells // max(cells, 1)))
+        out = []
+        i = 0
+        with torch.inference_mode():
+            while i < n:
+                part = x[i:i + step].to(device)
+                if self.half_precision:
+                    # autocast on MPS does not cast recurrent layer inputs
+                    part = part.half()
+                try:
+                    with torch.amp.autocast("mps", enabled=self.half_precision):
+                        out.append(self.forward(part).detach().cpu())
+                except RuntimeError as e:
+                    msg = str(e)
+                    if step == 1 or not (
+                            "Invalid buffer size" in msg
+                            or "out of memory" in msg):
+                        raise
+                    del part
+                    torch.mps.empty_cache()
+                    step = max(1, step // 2)
+                    continue
+                i += step
+        self._mps_part_size = step
+        return out[0] if len(out) == 1 else torch.cat(out)
 
     def process_batch(self, batch, loss_fn,):
         """Process the training batch, returning loss and metrics.
