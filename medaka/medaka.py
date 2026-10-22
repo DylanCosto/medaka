@@ -638,6 +638,7 @@ def medaka_parser():
     cparser.add_argument('--cpu',  action='store_true', default=False, help='Execute the model on the CPU.')
     cparser.add_argument('--min_mapq', type=int, default=None, help='Minimum mapping quality. (Default: use model default.')
     cparser.add_argument('--full_precision', action='store_true', default=False, help='Run model in full precision (default is half on GPU).')
+    cparser.add_argument('--half_precision_mps', action='store_true', default=False, help='Run model in half precision on an Apple GPU (default is full precision there).')
     tag_group = cparser.add_argument_group('filter tag', 'Filtering alignments by an integer valued tag.')
     tag_group.add_argument('--tag_name', type=str, help='Two-letter tag name.')
     tag_group.add_argument('--tag_value', type=int, help='Value of tag.')
