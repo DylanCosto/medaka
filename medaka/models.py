@@ -325,6 +325,8 @@ class TorchModel(torch.nn.Module):
         allows for a single buffer (in particular with read-level features),
         so the batch is split, halving the part size on allocation failures.
         The part size that worked is remembered for the next batches.
+        An individual sample above the cell limit is rejected before transfer
+        or inference; use CPU inference or smaller inputs in that case.
         """
         device = self.device()
         n = x.shape[0]
@@ -334,8 +336,16 @@ class TorchModel(torch.nn.Module):
         # (sample, position, read) cells per part. With read-level models the
         # intermediates are ~400x larger than the input.
         cells = max(t.numel() for t in (
-            x.values() if hasattr(x, "values") else [x])) // max(n, 1)
+            [x] if isinstance(x, torch.Tensor) else x.values())) // max(n, 1)
         max_cells = int(os.environ.get("MEDAKA_MPS_MAX_CELLS", 4_000_000))
+        if max_cells <= 0:
+            raise ValueError("MEDAKA_MPS_MAX_CELLS must be positive.")
+        if cells > max_cells:
+            raise RuntimeError(
+                "MPS inference cannot safely process a single sample with "
+                f"{cells} cells (MEDAKA_MPS_MAX_CELLS={max_cells}). "
+                "Use --cpu or reduce the input depth or chunk length."
+            )
         step = max(1, min(step, max_cells // max(cells, 1)))
         out = []
         i = 0
